@@ -82,6 +82,10 @@ module Statize
       _event_block_table(prof).freeze
     end
 
+    def profiles
+      @ops.keys.freeze
+    end
+
     private
     # keep possible next states
     def add_state_transition(prof, from, to)
@@ -228,6 +232,10 @@ module Statize
     else
       nil
     end
+  end
+
+  def profiles
+    self.class.profiles
   end
 
   private

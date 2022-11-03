@@ -189,6 +189,8 @@ RSpec.describe Statize do
     expect(t.st == "start").to be true
     expect(t.cst == t.current_state).to be true
 
+    expect(t.profiles.include?(:default) && t.profiles.include?(:first) && t.profiles.include?(:second)).to be true
+
   end
 
 end
