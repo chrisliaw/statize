@@ -16,16 +16,16 @@ RSpec.describe Statize do
 
       event :close, :open => :closed 
       event :kiv, :open => :kiv, :closed => :kiv 
-      event :reopen, :kiv => :open do |stage, evt, from, to|
-        puts "stage : #{stage} / event #{evt} == reopen / #{from} / #{to}"
+      event :reopen, :kiv => :open do |params|
+        puts "stage : #{params[:action]} / event #{params[:event]} == reopen / #{params[:from_state]} / #{params[:to_state]}"
       end
 
       # stage : :before or :after state change
       # evt : current event
       # from : current state
       # to : next state as configure in event() above
-      event :archive, :closed => :archived do |stage, evt, from, to|
-        puts "stage : #{stage} / event #{evt} == reopen / #{from} / #{to}"
+      event :archive, :closed => :archived do |params|
+        puts "stage : #{params[:action]} / event #{params[:event]} == archive / #{params[:from_state]} / #{params[:to_state]}"
         false
       end
 
@@ -68,7 +68,6 @@ RSpec.describe Statize do
     expect(t.state == "closed").to be true
     expect(t.next_states.include?("kiv")).to be true
 
-
     expect{ 
       t.trigger_event(:archive)
     }.to raise_exception(Statize::UserHalt)
@@ -88,8 +87,8 @@ RSpec.describe Statize do
       event :kiv, :open => :kiv, :closed => :kiv 
       event :reopen, :kiv => :open 
 
-      event :archive, :closed => :archived do |evt, from, to|
-        puts "event #{evt} == reopen / #{from} / #{to}"
+      event :archive, :closed => :archived do |params|
+        puts "stage : #{params[:action]} / event #{params[:event]} == archive / #{params[:from_state]} / #{params[:to_state]}"
         false
       end
 
@@ -148,6 +147,12 @@ RSpec.describe Statize do
 
       stateful initial_state: :logged, state_attr_name: :st do
         event :fire_up, :logged => :dislodged
+        event :cool_down, :dislodged => :logged
+        event :init, :logged => :inited
+
+        # arbitary mapping allow user to define under the domain and later retrieve it
+        # for other usage
+        state_meaning :dislodged => :record_locked, :inited => :record_locked, :logged => :nothing
       end
 
       stateful profile: :first, initial_state: :open, state_attr_name: :st do
@@ -167,29 +172,69 @@ RSpec.describe Statize do
     t = Target.new
     # default profile
     expect(t.current_state == "logged").to be true
+    expect(t.current_state_meaning == :nothing).to be true
 
-    t.activate_state_profile(:first)
+    t.trigger_event(:fire_up)
+    expect(t.current_state == "dislodged").to be true
+    expect(t.current_state_meaning == :record_locked).to be true
+
+    t.trigger_event(:cool_down)
+    expect(t.current_state == "logged").to be true
+    expect(t.current_state_meaning == :nothing).to be true
+
+    som = t.states_of_meaning(:record_locked)
+    expect(som.length == 2).to be true
+    expect(som.include?(:dislodged) && som.include?(:inited)).to be true
+
+    t.init_state(:first)
     expect(t.current_state == "open").to be true
     expect(t.st == "open").to be true
 
-    t.activate_state_profile(:second)
+    t.init_state(:second)
     expect(t.current_state == "active").to be true
     expect(t.st == "open").to be true
     expect(t.cst == "active").to be true
 
-    t.activate_state_profile(:first)
+    t.init_state(:first)
     t.trigger_event(:kick_start)
     expect(t.current_state == "start").to be true
     expect(t.st == "start").to be true
     expect(t.cst == "active").to be true
 
-    t.activate_state_profile(:second)
+    t.init_state(:second)
     t.trigger_event(:init)
     expect(t.current_state == "burnt").to be true
     expect(t.st == "start").to be true
     expect(t.cst == t.current_state).to be true
 
-    expect(t.profiles.include?(:default) && t.profiles.include?(:first) && t.profiles.include?(:second)).to be true
+    expect(t.state_profiles.include?(:default) && t.state_profiles.include?(:first) && t.state_profiles.include?(:second)).to be true
+    expect(Target.state_profiles.include?(:default) && Target.state_profiles.include?(:first) && Target.state_profiles.include?(:second)).to be true
+
+  end
+
+  it 'accepts method as block' do
+    
+    class Target
+      include Statize
+      
+      attr_accessor :st
+
+      stateful initial_state: :open, state_attr_name: :st do
+        event :rolling, :open => :started, &Proc.new { |pa| callback(pa) } 
+      end
+
+      def Target.callback(params)
+        puts "callback #{params}" 
+      end
+
+      def initialize
+        init_state
+      end
+
+    end
+
+    t = Target.new
+    t.trigger_event(:rolling)
 
   end
 

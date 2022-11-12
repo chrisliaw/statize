@@ -10,6 +10,7 @@ module Statize
   class InvalidStateForEvent < StandardError; end
   class UserHalt < StandardError; end
   class InvalidEvent < StandardError; end
+  class DuplicatedKey < StandardError; end
   
   include TR::CondUtils
 
@@ -28,7 +29,7 @@ module Statize
 
       @profile = opts[:profile] || :default 
 
-      opts.delete(:profile)
+      #opts.delete(:profile)
 
       ops.merge!(opts) if not opts.nil? and opts.is_a?(Hash)
 
@@ -54,8 +55,17 @@ module Statize
         add_state_events(@profile,fromSt, evt)
         add_state_transition(@profile, fromSt, toSt)
         add_event_states(@profile, evt, fromSt, toSt)
+        add_profile_states(@profile, fromSt, toSt)
       end
 
+    end
+
+    def state_meaning(ops)
+      raise Error, "Hash expected" if not ops.is_a?(Hash) 
+      ops.each do |k,v|
+        add_state_meaning(@profile, k, v)
+        add_meaning_states(@profile, v, k)
+      end
     end
 
     def state_attr_name(prof = :default)
@@ -82,7 +92,19 @@ module Statize
       _event_block_table(prof).freeze
     end
 
-    def profiles
+    def profile_states_list(prof = :default)
+      _profile_states_list(prof).freeze
+    end
+
+    def state_meaning_table(prof = :default)
+      _state_meaning_table(prof).freeze
+    end
+
+    def meaning_states_table(prof = :default)
+      _meaning_states_table(prof).freeze
+    end
+
+    def state_profiles
       @ops.keys.freeze
     end
 
@@ -95,7 +117,7 @@ module Statize
       _states_transfer_table(prof)[from] << to if not _states_transfer_table(prof)[from].include?(to)
     end
 
-    # keep state (current state) mapping to possible events
+    # map state (current state) to possible events
     def add_state_events(prof, from, evt)
       _state_events_table(prof)[from] = [] if _state_events_table(prof)[from].nil?
       _state_events_table(prof)[from] << evt
@@ -107,32 +129,61 @@ module Statize
       _event_states_table(prof)[evt][fromSt] = toSt
     end
 
+    # map event to block
     def add_event_block(prof, evt, &block)
       _event_block_table(prof)[evt] = block if block
     end
 
+    def add_profile_states(prof, *st)
+      st.each do |s|
+        _profile_states_list(prof) << s if not _profile_states_list(prof).include?(s)
+      end
+    end
+
+    def add_state_meaning(prof, state, meaning)
+      val = _state_meaning_table[state]
+      raise DuplicatedKey, "State '#{state}' has already given meaning '#{val}'" if not val.nil?
+      _state_meaning_table[state] = meaning
+    end
+
+    def add_meaning_states(prof, meaning, state)
+      _meaning_states_table(prof)[meaning] = [] if _meaning_states_table(prof)[meaning].nil?
+      _meaning_states_table(prof)[meaning] << state if not _meaning_states_table(prof)[meaning].include?(state)
+    end
+
     def _states_transfer_table(prof = :default)
-      #@ops[prof] = {} if @ops[prof].nil?
       @ops[prof][:state_transfer] = {} if @ops[prof][:state_transfer].nil?
       @ops[prof][:state_transfer]
     end
 
     def _state_events_table(prof = :default)
-      #@ops[prof] = {} if @ops[prof].nil?
       @ops[prof][:state_events] = {} if @ops[prof][:state_events].nil?
       @ops[prof][:state_events]
     end
 
     def _event_states_table(prof = :default)
-      #@ops[prof] = {} if @ops[prof].nil?
       @ops[prof][:event_states] = {} if @ops[prof][:event_states].nil?
       @ops[prof][:event_states]
     end
 
     def _event_block_table(prof = :default)
-      #@ops[prof] = {} if @ops[prof].nil?
       @ops[prof][:event_block_table] = {} if @ops[prof][:event_block_table].nil?
       @ops[prof][:event_block_table]
+    end
+
+    def _profile_states_list(prof = :default)
+      @ops[prof][:states] = [] if @ops[prof][:states].nil?
+      @ops[prof][:states]
+    end
+
+    def _state_meaning_table(prof = :default)
+      @ops[prof][:state_meaning] = {} if @ops[prof][:state_meaning].nil?
+      @ops[prof][:state_meaning]
+    end
+
+    def _meaning_states_table(prof = :default)
+      @ops[prof][:meaning_states] = {} if @ops[prof][:meaning_states].nil?
+      @ops[prof][:meaning_states]
     end
 
   end
@@ -146,22 +197,31 @@ module Statize
   # instance methods
   #
   def init_state(prof = :default)
-    set_active_profile(prof)
+    prof = prof.to_sym if not prof.nil?
+    set_active_state_profile(prof)
     update_state(self.class.initial_state(prof))
   end
 
   def activate_state_profile(prof)
-    set_active_profile(prof)
-    update_state(self.class.initial_state(prof))
+    prof = prof.to_sym if not prof.nil?
+    set_active_state_profile(prof)
+  end
+
+  def at_initial_state?
+    current_state == self.class.initial_state(active_state_profile)
   end
 
   def next_states
     st = current_state
     if not_empty?(st)
-      self.class.states_table(active_profile)[st.to_sym].map { |e| e.to_s }
+      self.class.states_table(active_state_profile)[st.to_sym].map { |e| e.to_s }
     else
       []
     end
+  end
+
+  def all_states
+    self.class.profile_states_list(active_state_profile).map { |s| s.to_s }
   end
 
   def apply_state(st)
@@ -187,19 +247,22 @@ module Statize
 
 
   def next_events
-    se = self.class.state_events_table(active_profile)
+    se = self.class.state_events_table(active_state_profile)
     cst = current_state
-    se[cst.to_sym]
+    res = se[cst.to_sym]
+    # res == nil will happened if it is at the end of the event chain
+    res = [] if res.nil? 
+    res
   end
 
-  def trigger_event(evt)
+  def trigger_event(evt, &block)
     evt = evt.to_sym if not evt.nil?
     cst = current_state
     if not_empty?(cst)
       cst = cst.to_sym
-      tbl = self.class.event_states_table(active_profile)[evt]
+      tbl = self.class.event_states_table(active_state_profile)[evt]
 
-      raise InvalidEvent, "Event '#{evt}' not registered under profile '#{active_profile}'" if tbl.nil?
+      raise InvalidEvent, "Event '#{evt}' not registered under profile '#{active_state_profile}'" if tbl.nil?
 
       # current state not tie to from state of this event
       raise InvalidStateForEvent, "Current state '#{cst}' is not register to event '#{evt}'" if not tbl.keys.include?(cst)
@@ -207,15 +270,16 @@ module Statize
       destSt = tbl[cst]
       raise InvalidStateForEvent, "New state transition from current state '#{cst}' due to event '#{evt}' is empty" if is_empty?(destSt)
 
-      evtBlock = self.class.event_block_table(active_profile)[evt]
+      evtBlock = self.class.event_block_table(active_state_profile)[evt]
       update = true
 
-      update = evtBlock.call(:before, evt, cst, destSt) if not evtBlock.nil?
+      update = evtBlock.call(action: :before, profile: active_state_profile, event: evt, from_state: cst, to_state: destSt, target: self) if not evtBlock.nil?
       update = true if is_empty?(update) or not_bool?(update)
 
       if update
         apply_state(destSt)
-        evtBlock.call(:after, evt, cst, destSt) if not evtBlock.nil?
+        evtBlock.call(action: :after, profile: active_state_profile, event: evt, from_state: cst, to_state: destSt, target: self) if not evtBlock.nil?
+        block.call(action: :after, profile: active_state_profile, event: evt, from_state: cst, to_state: destSt, target: self) if block
       else
         teLogger.error "Event '#{evt}' triggered but block returned false. Status not updated to '#{destSt}'"
         raise UserHalt,"Event '#{evt}' triggered but block returned false. Status not updated to '#{destSt}'"
@@ -227,15 +291,35 @@ module Statize
   end
 
   def current_state
-    if has_rattr?(self.class.state_attr_name(active_profile))
-      self.send("#{self.class.state_attr_name(active_profile)}")
+    if has_rattr?(self.class.state_attr_name(active_state_profile))
+      self.send("#{self.class.state_attr_name(active_state_profile)}")
     else
       nil
     end
   end
 
-  def profiles
-    self.class.profiles
+  def state_profiles
+    self.class.state_profiles
+  end
+
+  def current_state_meaning
+    cst = current_state
+    smt = self.class.state_meaning_table(active_state_profile)
+    meaning = smt[cst.to_sym]
+    if meaning.nil?
+      :not_defined
+    else
+      meaning
+    end
+  end
+
+  def states_of_meaning(meaning)
+    res = self.class.meaning_states_table(active_state_profile)[meaning]
+    if not res.nil?
+      res
+    else
+      []
+    end
   end
 
   private
@@ -247,17 +331,17 @@ module Statize
   end
 
   def update_state(st)
-    if has_wattr?(self.class.state_attr_name(active_profile))
-      self.send("#{self.class.state_attr_name(active_profile)}=", st.to_s) 
+    if has_wattr?(self.class.state_attr_name(active_state_profile))
+      self.send("#{self.class.state_attr_name(active_state_profile)}=", st.to_s) 
     end
   end
 
-  def active_profile
+  def active_state_profile
     @aprof = :default if is_empty?(@aprof)
     @aprof
   end
 
-  def set_active_profile(val)
+  def set_active_state_profile(val)
     @aprof = val
   end
 
